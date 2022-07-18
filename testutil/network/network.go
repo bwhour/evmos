@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/spf13/cobra"
 	tmcfg "github.com/tendermint/tendermint/config"
 	tmflags "github.com/tendermint/tendermint/libs/cli/flags"
@@ -40,19 +41,19 @@ import (
 	"github.com/cosmos/cosmos-sdk/simapp"
 	"github.com/cosmos/cosmos-sdk/simapp/params"
 	storetypes "github.com/cosmos/cosmos-sdk/store/types"
+	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/genutil"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+	"github.com/evmos/ethermint/crypto/hd"
+	"github.com/evmos/evmos/v6/app"
 
-	"github.com/tharsis/ethermint/crypto/hd"
-	"github.com/tharsis/ethermint/encoding"
-	"github.com/tharsis/ethermint/server/config"
-	ethermint "github.com/tharsis/ethermint/types"
-	evmtypes "github.com/tharsis/ethermint/x/evm/types"
-
-	"github.com/tharsis/evmos/app"
+	"github.com/evmos/ethermint/encoding"
+	"github.com/evmos/ethermint/server/config"
+	ethermint "github.com/evmos/ethermint/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
 // package-wide network lock to only allow one test network at a time
@@ -62,48 +63,34 @@ var lock = new(sync.Mutex)
 // creates an ABCI Application to provide to Tendermint.
 type AppConstructor = func(val Validator) servertypes.Application
 
-// NewAppConstructor returns a new simapp AppConstructor
-func NewAppConstructor(encodingCfg params.EncodingConfig) AppConstructor {
-	return func(val Validator) servertypes.Application {
-		return app.NewEvmos(
-			val.Ctx.Logger, dbm.NewMemDB(), nil, true, make(map[int64]bool), val.Ctx.Config.RootDir, 0,
-			encodingCfg,
-			simapp.EmptyAppOptions{},
-			baseapp.SetPruning(storetypes.NewPruningOptionsFromString(val.AppConfig.Pruning)),
-			baseapp.SetMinGasPrices(val.AppConfig.MinGasPrices),
-		)
-	}
-}
-
 // Config defines the necessary configuration used to bootstrap and start an
 // in-process local testing network.
 type Config struct {
+	KeyringOptions    []keyring.Option // keyring configuration options
 	Codec             codec.Codec
 	LegacyAmino       *codec.LegacyAmino // TODO: Remove!
 	InterfaceRegistry codectypes.InterfaceRegistry
-
-	TxConfig         client.TxConfig
-	AccountRetriever client.AccountRetriever
-	AppConstructor   AppConstructor      // the ABCI application constructor
-	GenesisState     simapp.GenesisState // custom gensis state to provide
-	TimeoutCommit    time.Duration       // the consensus commitment timeout
-	ChainID          string              // the network chain-id
-	NumValidators    int                 // the total number of validators to create and bond
-	BondDenom        string              // the staking bond denomination
-	MinGasPrices     string              // the minimum gas prices each validator will accept
-	AccountTokens    sdk.Int             // the amount of unique validator tokens (e.g. 1000node0)
-	StakingTokens    sdk.Int             // the amount of tokens each validator has available to stake
-	BondedTokens     sdk.Int             // the amount of tokens each validator stakes
-	PruningStrategy  string              // the pruning strategy each validator will have
-	EnableTMLogging  bool                // enable Tendermint logging to STDOUT
-	CleanupDir       bool                // remove base temporary directory during cleanup
-	SigningAlgo      string              // signing algorithm for keys
-	KeyringOptions   []keyring.Option    // keyring configuration options
-	RPCAddress       string              // RPC listen address (including port)
-	JSONRPCAddress   string              // JSON-RPC listen address (including port)
-	APIAddress       string              // REST API listen address (including port)
-	GRPCAddress      string              // GRPC server listen address (including port)
-	PrintMnemonic    bool                // print the mnemonic of first validator as log output for testing
+	TxConfig          client.TxConfig
+	AccountRetriever  client.AccountRetriever
+	AppConstructor    AppConstructor      // the ABCI application constructor
+	GenesisState      simapp.GenesisState // custom gensis state to provide
+	TimeoutCommit     time.Duration       // the consensus commitment timeout
+	AccountTokens     sdk.Int             // the amount of unique validator tokens (e.g. 1000node0)
+	StakingTokens     sdk.Int             // the amount of tokens each validator has available to stake
+	BondedTokens      sdk.Int             // the amount of tokens each validator stakes
+	NumValidators     int                 // the total number of validators to create and bond
+	ChainID           string              // the network chain-id
+	BondDenom         string              // the staking bond denomination
+	MinGasPrices      string              // the minimum gas prices each validator will accept
+	PruningStrategy   string              // the pruning strategy each validator will have
+	SigningAlgo       string              // signing algorithm for keys
+	RPCAddress        string              // RPC listen address (including port)
+	JSONRPCAddress    string              // JSON-RPC listen address (including port)
+	APIAddress        string              // REST API listen address (including port)
+	GRPCAddress       string              // GRPC server listen address (including port)
+	EnableTMLogging   bool                // enable Tendermint logging to STDOUT
+	CleanupDir        bool                // remove base temporary directory during cleanup
+	PrintMnemonic     bool                // print the mnemonic of first validator as log output for testing
 }
 
 // DefaultConfig returns a sane default configuration suitable for nearly all
@@ -135,6 +122,19 @@ func DefaultConfig() Config {
 	}
 }
 
+// NewAppConstructor returns a new Evmos AppConstructor
+func NewAppConstructor(encodingCfg params.EncodingConfig) AppConstructor {
+	return func(val Validator) servertypes.Application {
+		return app.NewEvmos(
+			val.Ctx.Logger, dbm.NewMemDB(), nil, true, make(map[int64]bool), val.Ctx.Config.RootDir, 0,
+			encodingCfg,
+			simapp.EmptyAppOptions{},
+			baseapp.SetPruning(storetypes.NewPruningOptionsFromString(val.AppConfig.Pruning)),
+			baseapp.SetMinGasPrices(val.AppConfig.MinGasPrices),
+		)
+	}
+}
+
 type (
 	// Network defines a local in-process testing network using SimApp. It can be
 	// configured to start any number of validators, each with its own RPC and API
@@ -158,20 +158,20 @@ type (
 	// a client can make RPC and API calls and interact with any client command
 	// or handler.
 	Validator struct {
-		AppConfig      *config.Config
-		ClientCtx      client.Context
-		Ctx            *server.Context
-		Dir            string
-		NodeID         string
-		PubKey         cryptotypes.PubKey
-		Moniker        string
-		APIAddress     string
-		RPCAddress     string
-		P2PAddress     string
-		JSONRPCAddress string
-		Address        sdk.AccAddress
-		ValAddress     sdk.ValAddress
-		RPCClient      tmclient.Client
+		AppConfig     *config.Config
+		ClientCtx     client.Context
+		Ctx           *server.Context
+		Dir           string
+		NodeID        string
+		PubKey        cryptotypes.PubKey
+		Moniker       string
+		APIAddress    string
+		RPCAddress    string
+		P2PAddress    string
+		Address       sdk.AccAddress
+		ValAddress    sdk.ValAddress
+		RPCClient     tmclient.Client
+		JSONRPCClient *ethclient.Client
 
 		tmNode      *node.Node
 		api         *api.Server
@@ -249,6 +249,7 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 		appCfg.API.Enable = true
 		appCfg.API.Swagger = false
 		appCfg.Telemetry.Enabled = false
+		appCfg.Telemetry.GlobalLabels = [][]string{{"chain_id", cfg.ChainID}}
 
 		ctx := server.NewDefaultContext()
 		tmCfg := ctx.Config
@@ -317,7 +318,7 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 				appCfg.JSONRPC.Address = fmt.Sprintf("0.0.0.0:%s", jsonRPCPort)
 			}
 			appCfg.JSONRPC.Enable = true
-			appCfg.JSONRPC.API = config.GetDefaultAPINamespaces()
+			appCfg.JSONRPC.API = config.GetAPINamespaces()
 		}
 
 		logger := log.NewNopLogger()
@@ -333,12 +334,12 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 		clientDir := filepath.Join(network.BaseDir, nodeDirName, "evmoscli")
 		gentxsDir := filepath.Join(network.BaseDir, "gentxs")
 
-		err := os.MkdirAll(filepath.Join(nodeDir, "config"), 0o755)
+		err := os.MkdirAll(filepath.Join(nodeDir, "config"), 0o750)
 		if err != nil {
 			return nil, err
 		}
 
-		err = os.MkdirAll(clientDir, 0o755)
+		err = os.MkdirAll(clientDir, 0o750)
 		if err != nil {
 			return nil, err
 		}
@@ -379,7 +380,7 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 			return nil, err
 		}
 
-		addr, secret, err := server.GenerateSaveCoinKey(kb, nodeDirName, true, algo)
+		addr, secret, err := testutil.GenerateSaveCoinKey(kb, nodeDirName, "", true, algo)
 		if err != nil {
 			return nil, err
 		}
@@ -470,6 +471,13 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 		customAppTemplate, _ := config.AppConfig(ethermint.AttoPhoton)
 		srvconfig.SetConfigTemplate(customAppTemplate)
 		srvconfig.WriteConfigFile(filepath.Join(nodeDir, "config/app.toml"), appCfg)
+
+		ctx.Viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+		ctx.Viper.SetConfigFile(filepath.Join(nodeDir, "config/app.toml"))
+		err = ctx.Viper.ReadInConfig()
+		if err != nil {
+			return nil, err
+		}
 
 		clientCtx := client.Context{}.
 			WithKeyringDir(clientDir).

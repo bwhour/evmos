@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cosmos/cosmos-sdk/simapp/params"
 	"github.com/cosmos/cosmos-sdk/snapshots"
@@ -30,16 +32,16 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/cosmos/cosmos-sdk/x/crisis"
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
-	ethermintclient "github.com/tharsis/ethermint/client"
-	"github.com/tharsis/ethermint/client/debug"
-	"github.com/tharsis/ethermint/crypto/hd"
-	"github.com/tharsis/ethermint/encoding"
-	ethermintserver "github.com/tharsis/ethermint/server"
-	servercfg "github.com/tharsis/ethermint/server/config"
-	srvflags "github.com/tharsis/ethermint/server/flags"
-	ethermint "github.com/tharsis/ethermint/types"
+	ethermintclient "github.com/evmos/ethermint/client"
+	"github.com/evmos/ethermint/client/debug"
+	"github.com/evmos/ethermint/encoding"
+	ethermintserver "github.com/evmos/ethermint/server"
+	servercfg "github.com/evmos/ethermint/server/config"
+	srvflags "github.com/evmos/ethermint/server/flags"
 
-	"github.com/tharsis/evmos/app"
+	"github.com/evmos/evmos/v6/app"
+	cmdcfg "github.com/evmos/evmos/v6/cmd/config"
+	evmoskr "github.com/evmos/evmos/v6/crypto/keyring"
 )
 
 const (
@@ -59,7 +61,7 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 		WithAccountRetriever(types.AccountRetriever{}).
 		WithBroadcastMode(flags.BroadcastBlock).
 		WithHomeDir(app.DefaultNodeHome).
-		WithKeyringOptions(hd.EthSecp256k1Option()).
+		WithKeyringOptions(evmoskr.Option()).
 		WithViper(EnvPrefix)
 
 	rootCmd := &cobra.Command{
@@ -69,6 +71,12 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 			// set the default command outputs
 			cmd.SetOut(cmd.OutOrStdout())
 			cmd.SetErr(cmd.ErrOrStderr())
+
+			// Disable ledger temporarily
+			useLedger, _ := cmd.Flags().GetBool(flags.FlagUseLedger)
+			if useLedger {
+				return errors.New("--ledger flag passed: Ledger device is currently not supported")
+			}
 
 			initClientCtx, err := client.ReadPersistentCommandFlags(initClientCtx, cmd.Flags())
 			if err != nil {
@@ -84,25 +92,31 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 				return err
 			}
 
-			// TODO: define our own token
-			customAppTemplate, customAppConfig := servercfg.AppConfig(ethermint.AttoPhoton)
+			// override the app and tendermint configuration
+			customAppTemplate, customAppConfig := initAppConfig()
 
-			return sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig)
+			err = sdkserver.InterceptConfigsPreRunHandler(cmd, customAppTemplate, customAppConfig)
+			if err != nil {
+				return err
+			}
+
+			// TODO: remove the lines below once Cosmos SDK v0.46 is released
+			serverCtx := sdkserver.GetServerContextFromCmd(cmd)
+			serverCtx.Config.Consensus.TimeoutCommit = time.Second
+
+			return sdkserver.SetCmdServerContext(cmd, serverCtx)
 		},
 	}
-
-	// TODO: double-check
-	// authclient.Codec = encodingConfig.Marshaler
 
 	cfg := sdk.GetConfig()
 	cfg.Seal()
 
 	rootCmd.AddCommand(
 		ethermintclient.ValidateChainID(
-			genutilcli.InitCmd(app.ModuleBasics, app.DefaultNodeHome),
+			InitCmd(app.ModuleBasics, app.DefaultNodeHome),
 		),
 		genutilcli.CollectGenTxsCmd(banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
-		genutilcli.MigrateGenesisCmd(),
+		MigrateGenesisCmd(),
 		genutilcli.GenTxCmd(app.ModuleBasics, encodingConfig.TxConfig, banktypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
 		genutilcli.ValidateGenesisCmd(app.ModuleBasics),
 		AddGenesisAccountCmd(app.DefaultNodeHome),
@@ -122,7 +136,10 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 		txCommand(),
 		ethermintclient.KeyCommands(app.DefaultNodeHome),
 	)
-	rootCmd = srvflags.AddTxFlags(rootCmd)
+	rootCmd, err := srvflags.AddTxFlags(rootCmd)
+	if err != nil {
+		panic(err)
+	}
 
 	// add rosetta
 	rootCmd.AddCommand(sdkserver.RosettaCommand(encodingConfig.InterfaceRegistry, encodingConfig.Marshaler))
@@ -182,6 +199,22 @@ func txCommand() *cobra.Command {
 	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
 
 	return cmd
+}
+
+// initAppConfig helps to override default appConfig template and configs.
+// return "", nil if no custom configuration is required for the application.
+func initAppConfig() (string, interface{}) {
+	customAppTemplate, customAppConfig := servercfg.AppConfig(cmdcfg.BaseDenom)
+
+	srvCfg, ok := customAppConfig.(servercfg.Config)
+	if !ok {
+		panic(fmt.Errorf("unknown app config type %T", customAppConfig))
+	}
+
+	srvCfg.StateSync.SnapshotInterval = 1500
+	srvCfg.StateSync.SnapshotKeepRecent = 2
+
+	return customAppTemplate, srvCfg
 }
 
 type appCreator struct {

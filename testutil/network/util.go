@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ethereum/go-ethereum/ethclient"
 	tmos "github.com/tendermint/tendermint/libs/os"
 	"github.com/tendermint/tendermint/node"
 	"github.com/tendermint/tendermint/p2p"
@@ -24,11 +25,11 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/genutil"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
-	mintypes "github.com/cosmos/cosmos-sdk/x/mint/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+	inflationtypes "github.com/evmos/evmos/v6/x/inflation/types"
 
-	"github.com/tharsis/ethermint/server"
-	evmtypes "github.com/tharsis/ethermint/x/evm/types"
+	"github.com/evmos/ethermint/server"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
 func startInProcess(cfg Config, val *Validator) error {
@@ -121,17 +122,24 @@ func startInProcess(cfg Config, val *Validator) error {
 		}
 	}
 
-	if val.AppConfig.JSONRPC.Enable && val.JSONRPCAddress != "" {
+	if val.AppConfig.JSONRPC.Enable && val.AppConfig.JSONRPC.Address != "" {
 		if val.Ctx == nil || val.Ctx.Viper == nil {
 			return fmt.Errorf("validator %s context is nil", val.Moniker)
 		}
 
-		fmt.Println(&val.Ctx, &val.Ctx.Viper)
-
 		tmEndpoint := "/websocket"
-		val.jsonrpc, val.jsonrpcDone, err = server.StartJSONRPC(val.Ctx, val.ClientCtx, val.JSONRPCAddress, tmEndpoint, *val.AppConfig)
+		tmRPCAddr := fmt.Sprintf("tcp://%s", val.AppConfig.GRPC.Address)
+
+		val.jsonrpc, val.jsonrpcDone, err = server.StartJSONRPC(val.Ctx, val.ClientCtx, tmRPCAddr, tmEndpoint, *val.AppConfig)
 		if err != nil {
 			return err
+		}
+
+		address := fmt.Sprintf("http://%s", val.AppConfig.JSONRPC.Address)
+
+		val.JSONRPCClient, err = ethclient.Dial(address)
+		if err != nil {
+			return fmt.Errorf("failed to dial JSON-RPC at %s: %w", val.AppConfig.JSONRPC.Address, err)
 		}
 	}
 
@@ -203,11 +211,11 @@ func initGenFiles(cfg Config, genAccounts []authtypes.GenesisAccount, genBalance
 	govGenState.DepositParams.MinDeposit[0].Denom = cfg.BondDenom
 	cfg.GenesisState[govtypes.ModuleName] = cfg.Codec.MustMarshalJSON(&govGenState)
 
-	var mintGenState mintypes.GenesisState
-	cfg.Codec.MustUnmarshalJSON(cfg.GenesisState[mintypes.ModuleName], &mintGenState)
+	var inflationGenState inflationtypes.GenesisState
+	cfg.Codec.MustUnmarshalJSON(cfg.GenesisState[inflationtypes.ModuleName], &inflationGenState)
 
-	mintGenState.Params.MintDenom = cfg.BondDenom
-	cfg.GenesisState[mintypes.ModuleName] = cfg.Codec.MustMarshalJSON(&mintGenState)
+	inflationGenState.Params.MintDenom = cfg.BondDenom
+	cfg.GenesisState[inflationtypes.ModuleName] = cfg.Codec.MustMarshalJSON(&inflationGenState)
 
 	var crisisGenState crisistypes.GenesisState
 	cfg.Codec.MustUnmarshalJSON(cfg.GenesisState[crisistypes.ModuleName], &crisisGenState)
@@ -243,18 +251,12 @@ func initGenFiles(cfg Config, genAccounts []authtypes.GenesisAccount, genBalance
 }
 
 func WriteFile(name string, dir string, contents []byte) error {
-	writePath := filepath.Join(dir)
-	file := filepath.Join(writePath, name)
+	file := filepath.Join(dir, name)
 
-	err := tmos.EnsureDir(writePath, 0o755)
+	err := tmos.EnsureDir(dir, 0o755)
 	if err != nil {
 		return err
 	}
 
-	err = tmos.WriteFile(file, contents, 0o644)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return tmos.WriteFile(file, contents, 0o644)
 }

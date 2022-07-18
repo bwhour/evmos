@@ -7,8 +7,8 @@ import (
 	svrcmd "github.com/cosmos/cosmos-sdk/server/cmd"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
-	"github.com/tharsis/evmos/app"
-	cmdcfg "github.com/tharsis/evmos/cmd/config"
+	"github.com/evmos/evmos/v6/app"
+	cmdcfg "github.com/evmos/evmos/v6/cmd/config"
 )
 
 func main() {
@@ -32,9 +32,10 @@ func setupConfig() {
 	// set the address prefixes
 	config := sdk.GetConfig()
 	cmdcfg.SetBech32Prefixes(config)
-	if err := cmdcfg.EnableObservability(); err != nil {
-		panic(err)
-	}
+	// TODO fix
+	// if err := cmdcfg.EnableObservability(); err != nil {
+	// 	panic(err)
+	// }
 	cmdcfg.SetBip44CoinType(config)
 	config.Seal()
 }

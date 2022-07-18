@@ -2,7 +2,9 @@
 
 PACKAGES_NOSIMULATION=$(shell go list ./... | grep -v '/simulation')
 PACKAGES_SIMTEST=$(shell go list ./... | grep '/simulation')
-VERSION ?= $(shell echo $(shell git describe --tags `git rev-list --tags="v*" --max-count=1`) | sed 's/^v//')
+DIFF_TAG=$(shell git rev-list --tags="v*" --max-count=1 --not $(shell git rev-list --tags="v*" "HEAD..origin"))
+DEFAULT_TAG=$(shell git rev-list --tags="v*" --max-count=1)
+VERSION ?= $(shell echo $(shell git describe --tags $(or $(DIFF_TAG), $(DEFAULT_TAG))) | sed 's/^v//')
 TMVERSION := $(shell go list -m github.com/tendermint/tendermint | sed 's:.* ::')
 COMMIT := $(shell git log -1 --format='%H')
 LEDGER_ENABLED ?= true
@@ -11,9 +13,14 @@ EVMOS_BINARY = evmosd
 EVMOS_DIR = evmos
 BUILDDIR ?= $(CURDIR)/build
 SIMAPP = ./app
-HTTPS_GIT := https://github.com/tharsis/evmos.git
+HTTPS_GIT := https://github.com/evmos/evmos.git
 DOCKER := $(shell which docker)
 DOCKER_BUF := $(DOCKER) run --rm -v $(CURDIR):/workspace --workdir /workspace bufbuild/buf
+NAMESPACE := tharsishq
+PROJECT := evmos
+DOCKER_IMAGE := $(NAMESPACE)/$(PROJECT)
+COMMIT_HASH := $(shell git rev-parse --short=7 HEAD)
+DOCKER_TAG := $(COMMIT_HASH)
 
 export GO111MODULE = on
 
@@ -62,11 +69,11 @@ build_tags_comma_sep := $(subst $(whitespace),$(comma),$(build_tags))
 # process linker flags
 
 ldflags = -X github.com/cosmos/cosmos-sdk/version.Name=evmos \
-		  -X github.com/cosmos/cosmos-sdk/version.AppName=$(EVMOS_BINARY) \
-		  -X github.com/cosmos/cosmos-sdk/version.Version=$(VERSION) \
-		  -X github.com/cosmos/cosmos-sdk/version.Commit=$(COMMIT) \
-			-X "github.com/cosmos/cosmos-sdk/version.BuildTags=$(build_tags_comma_sep)" \
-			-X github.com/tendermint/tendermint/version.TMCoreSemVer=$(TMVERSION)
+          -X github.com/cosmos/cosmos-sdk/version.AppName=$(EVMOS_BINARY) \
+          -X github.com/cosmos/cosmos-sdk/version.Version=$(VERSION) \
+          -X github.com/cosmos/cosmos-sdk/version.Commit=$(COMMIT) \
+          -X "github.com/cosmos/cosmos-sdk/version.BuildTags=$(build_tags_comma_sep)" \
+          -X github.com/tendermint/tendermint/version.TMCoreSemVer=$(TMVERSION)
 
 # DB backend selection
 ifeq (cleveldb,$(findstring cleveldb,$(COSMOS_BUILD_OPTIONS)))
@@ -118,18 +125,35 @@ $(BUILD_TARGETS): go.sum $(BUILDDIR)/
 $(BUILDDIR)/:
 	mkdir -p $(BUILDDIR)/
 
-docker-build:
+build-reproducible: go.sum
+	$(DOCKER) rm latest-build || true
+	$(DOCKER) run --volume=$(CURDIR):/sources:ro \
+        --env TARGET_PLATFORMS='linux/amd64' \
+        --env APP=evmosd \
+        --env VERSION=$(VERSION) \
+        --env COMMIT=$(COMMIT) \
+        --env CGO_ENABLED=1 \
+        --env LEDGER_ENABLED=$(LEDGER_ENABLED) \
+        --name latest-build tendermintdev/rbuilder:latest
+	$(DOCKER) cp -a latest-build:/home/builder/artifacts/ $(CURDIR)/
+
+
+build-docker:
 	# TODO replace with kaniko
-	docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-	docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+	$(DOCKER) build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+	$(DOCKER) tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
 	# docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:${COMMIT_HASH}
 	# update old container
-	docker rm evmos || true
+	$(DOCKER) rm evmos || true
 	# create a new container from the latest image
-	docker create --name evmos -t -i tharsis/evmos:latest evmos
+	$(DOCKER) create --name evmos -t -i ${DOCKER_IMAGE}:latest evmos
 	# move the binaries to the ./build directory
 	mkdir -p ./build/
-	docker cp evmos:/usr/bin/evmosd ./build/
+	$(DOCKER) cp evmos:/usr/bin/evmosd ./build/
+
+push-docker: build-docker
+	$(DOCKER) push ${DOCKER_IMAGE}:${DOCKER_TAG}
+	$(DOCKER) push ${DOCKER_IMAGE}:latest
 
 $(MOCKS_DIR):
 	mkdir -p $(MOCKS_DIR)
@@ -195,17 +219,16 @@ endif
 
 ifeq (, $(shell which protoc-gen-go))
 	@echo "Installing protoc-gen-go..."
-	@go get github.com/fjl/gencodec github.com/golang/protobuf/protoc-gen-go
+	@go get github.com/fjl/gencodec
+	@go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 else
 	@echo "protoc-gen-go already installed; skipping..."
 endif
 
-ifeq (, $(shell which protoc))
-	@echo "Please istalling protobuf according to your OS"
-	@echo "macOS: brew install protobuf"
-	@echo "linux: apt-get install -f -y protobuf-compiler"
+ifeq (, $(shell which protoc-gen-go-grpc))
+	@go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 else
-	@echo "protoc already installed; skipping..."
+	@echo "protoc-gen-go-grpc already installed; skipping..."
 endif
 
 ifeq (, $(shell which solcjs))
@@ -262,7 +285,7 @@ update-swagger-docs: statik
 .PHONY: update-swagger-docs
 
 godocs:
-	@echo "--> Wait a few seconds and visit http://localhost:6060/pkg/github.com/tharsis/evmos/types"
+	@echo "--> Wait a few seconds and visit http://localhost:6060/pkg/github.com/evmos/evmos/types"
 	godoc -http=:6060
 
 # Start docs site at localhost:8080
@@ -394,6 +417,7 @@ benchmark:
 
 lint:
 	golangci-lint run --out-format=tab
+	solhint contracts/**/*.sol
 
 lint-contracts:
 	@cd contracts && \
@@ -407,13 +431,14 @@ lint-fix-contracts:
 	@cd contracts && \
 	npm i && \
 	npm run lint-fix
+	solhint --fix contracts/**/*.sol
 
 .PHONY: lint lint-fix
 
 format:
 	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/docs/statik/statik.go" -not -name '*.pb.go' | xargs gofmt -w -s
 	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/docs/statik/statik.go" -not -name '*.pb.go' | xargs misspell -w
-	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/docs/statik/statik.go" -not -name '*.pb.go' | xargs goimports -w -local github.com/tharsis/evmos
+	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/docs/statik/statik.go" -not -name '*.pb.go' | xargs goimports -w -local github.com/evmos/evmos
 .PHONY: format
 
 ###############################################################################
@@ -447,9 +472,11 @@ proto-check-breaking:
 	@$(DOCKER_BUF) breaking --against $(HTTPS_GIT)#branch=main
 
 
-TM_URL              = https://raw.githubusercontent.com/tendermint/tendermint/v0.34.12/proto/tendermint
+TM_URL              = https://raw.githubusercontent.com/tendermint/tendermint/v0.34.15/proto/tendermint
 GOGO_PROTO_URL      = https://raw.githubusercontent.com/regen-network/protobuf/cosmos
-COSMOS_SDK_URL      = https://raw.githubusercontent.com/cosmos/cosmos-sdk/v0.43.0
+COSMOS_SDK_URL      = https://raw.githubusercontent.com/cosmos/cosmos-sdk/v0.45.1
+ETHERMINT_URL      	= https://raw.githubusercontent.com/tharsis/ethermint/v0.10.0
+IBC_GO_URL      		= https://raw.githubusercontent.com/cosmos/ibc-go/v3.0.0-rc0
 COSMOS_PROTO_URL    = https://raw.githubusercontent.com/regen-network/cosmos-proto/master
 
 TM_CRYPTO_TYPES     = third_party/proto/tendermint/crypto
@@ -494,20 +521,9 @@ localnet-build:
 	@$(MAKE) -C networks/local
 
 # Start a 4-node testnet locally
-localnet-start: localnet-stop
-ifeq ($(OS),Windows_NT)
-	mkdir localnet-setup &
-	@$(MAKE) localnet-build
-
-	IF not exist "build/node0/$(EVMOS_BINARY)/config/genesis.json" docker run --rm -v $(CURDIR)/build\evmos\Z evmosd/node "./evmosd testnet --v 4 -o /evmos --keyring-backend=test --ip-addresses evmosdnode0,evmosdnode1,evmosdnode2,evmosdnode3"
+localnet-start: localnet-stop localnet-build
+	@if ! [ -f build/node0/$(EVMOS_BINARY)/config/genesis.json ]; then docker run --rm -v $(CURDIR)/build:/evmos:Z evmos/node "./evmosd testnet init-files --v 4 -o /evmos --keyring-backend=test --starting-ip-address 192.167.10.2"; fi
 	docker-compose up -d
-else
-	mkdir -p localnet-setup
-	@$(MAKE) localnet-build
-
-	if ! [ -f localnet-setup/node0/$(EVMOS_BINARY)/config/genesis.json ]; then docker run --rm -v $(CURDIR)/localnet-setup:/evmos:Z evmosd/node "./evmosd testnet --v 4 -o /evmos --keyring-backend=test --ip-addresses evmosdnode0,evmosdnode1,evmosdnode2,evmosdnode3"; fi
-	docker-compose up -d
-endif
 
 # Stop testnet
 localnet-stop:
@@ -516,35 +532,35 @@ localnet-stop:
 # Clean testnet
 localnet-clean:
 	docker-compose down
-	sudo rm -rf localnet-setup
+	sudo rm -rf build/*
 
  # Reset testnet
 localnet-unsafe-reset:
 	docker-compose down
 ifeq ($(OS),Windows_NT)
-	@docker run --rm -v $(CURDIR)\localnet-setup\node0\evmosd:evmos\Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)\localnet-setup\node1\evmosd:evmos\Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)\localnet-setup\node2\evmosd:evmos\Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)\localnet-setup\node3\evmosd:evmos\Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)\build\node0\evmosd:/evmos\Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)\build\node1\evmosd:/evmos\Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)\build\node2\evmosd:/evmos\Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)\build\node3\evmosd:/evmos\Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
 else
-	@docker run --rm -v $(CURDIR)/localnet-setup/node0/evmosd:/evmos:Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)/localnet-setup/node1/evmosd:/evmos:Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)/localnet-setup/node2/evmosd:/evmos:Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
-	@docker run --rm -v $(CURDIR)/localnet-setup/node3/evmosd:/evmos:Z evmosd/node "./evmosd unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)/build/node0/evmosd:/evmos:Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)/build/node1/evmosd:/evmos:Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)/build/node2/evmosd:/evmos:Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
+	@docker run --rm -v $(CURDIR)/build/node3/evmosd:/evmos:Z evmos/node "./evmosd tendermint unsafe-reset-all --home=/evmos"
 endif
 
 # Clean testnet
 localnet-show-logstream:
 	docker-compose logs --tail=1000 -f
 
-.PHONY: build-docker-local-evmos localnet-start localnet-stop
+.PHONY: localnet-build localnet-start localnet-stop
 
 ###############################################################################
 ###                                Releasing                                ###
 ###############################################################################
 
-PACKAGE_NAME:=github.com/tharsis/evmos
-GOLANG_CROSS_VERSION  = v1.17.1
+PACKAGE_NAME:=github.com/evmos/evmos
+GOLANG_CROSS_VERSION  = v1.18
 GOPATH ?= '$(HOME)/go'
 release-dry-run:
 	docker run \
@@ -555,7 +571,7 @@ release-dry-run:
 		-v `pwd`:/go/src/$(PACKAGE_NAME) \
 		-v ${GOPATH}/pkg:/go/pkg \
 		-w /go/src/$(PACKAGE_NAME) \
-		ghcr.io/troian/golang-cross:${GOLANG_CROSS_VERSION} \
+		ghcr.io/goreleaser/goreleaser-cross:${GOLANG_CROSS_VERSION} \
 		--rm-dist --skip-validate --skip-publish --snapshot
 
 release:
@@ -571,7 +587,63 @@ release:
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-v `pwd`:/go/src/$(PACKAGE_NAME) \
 		-w /go/src/$(PACKAGE_NAME) \
-		ghcr.io/troian/golang-cross:${GOLANG_CROSS_VERSION} \
+		ghcr.io/goreleaser/goreleaser-cross:${GOLANG_CROSS_VERSION} \
 		release --rm-dist --skip-validate
 
 .PHONY: release-dry-run release
+
+###############################################################################
+###                        Compile Solidity Contracts                       ###
+###############################################################################
+
+CONTRACTS_DIR := contracts
+COMPILED_DIR := contracts/compiled_contracts
+TMP := tmp
+TMP_CONTRACTS := $(TMP).contracts
+TMP_COMPILED := $(TMP)/compiled.json
+TMP_JSON := $(TMP)/tmp.json
+
+# Compile and format solidity contracts for the erc20 module. Also install
+# openzeppeling as the contracts are build on top of openzeppelin templates.
+contracts-compile: contracts-clean openzeppelin create-contracts-json
+
+# Install openzeppelin solidity contracts
+openzeppelin:
+	@echo "Importing openzeppelin contracts..."
+	@cd $(CONTRACTS_DIR)
+	@npm install
+	@cd ../../../../
+	@mv node_modules $(TMP)
+	@mv package-lock.json $(TMP)
+	@mv $(TMP)/@openzeppelin $(CONTRACTS_DIR)
+
+# Clean tmp files
+contracts-clean:
+	@rm -rf tmp
+	@rm -rf node_modules
+	@rm -rf $(COMPILED_DIR)
+	@rm -rf $(CONTRACTS_DIR)/@openzeppelin
+
+# Compile, filter out and format contracts into the following format.
+# {
+# 	"abi": "[{\"inpu 			# JSON string
+# 	"bin": "60806040
+# 	"contractName": 			# filename without .sol
+# }
+create-contracts-json:
+	@for c in $(shell ls $(CONTRACTS_DIR) | grep '\.sol' | sed 's/.sol//g'); do \
+		command -v jq > /dev/null 2>&1 || { echo >&2 "jq not installed."; exit 1; } ;\
+		command -v solc > /dev/null 2>&1 || { echo >&2 "solc not installed."; exit 1; } ;\
+		mkdir -p $(COMPILED_DIR) ;\
+		mkdir -p $(TMP) ;\
+		echo "\nCompiling solidity contract $${c}..." ;\
+		solc --combined-json abi,bin $(CONTRACTS_DIR)/$${c}.sol > $(TMP_COMPILED) ;\
+		echo "Formatting JSON..." ;\
+		get_contract=$$(jq '.contracts["$(CONTRACTS_DIR)/'$$c'.sol:'$$c'"]' $(TMP_COMPILED)) ;\
+		add_contract_name=$$(echo $$get_contract | jq '. + { "contractName": "'$$c'" }') ;\
+		echo $$add_contract_name | jq > $(TMP_JSON) ;\
+		abi_string=$$(echo $$add_contract_name | jq -cr '.abi') ;\
+		echo $$add_contract_name | jq --arg newval "$$abi_string" '.abi = $$newval' > $(TMP_JSON) ;\
+		mv $(TMP_JSON) $(COMPILED_DIR)/$${c}.json ;\
+	done
+	@rm -rf tmp

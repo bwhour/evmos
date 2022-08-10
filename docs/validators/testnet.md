@@ -117,7 +117,7 @@ sed -i.bak -e "s/^persistent_peers *=.*/persistent_peers = \"$PEERS\"/" ~/.evmos
 
 ## Run a Testnet Validator
 
-Claim your testnet {{ $themeConfig.project.testnet_denom }} on the [faucet](./../developers/faucet.md) using your validator account address and submit your validator account address:
+Claim your testnet {{ $themeConfig.project.testnet_denom }} on the [faucet](./../developers/testnet/faucet.md) using your validator account address and submit your validator account address:
 
 ::: tip
 For more details on how to run your validator, follow [these](./setup/run_validator.md) instructions.
@@ -193,3 +193,7 @@ evmosd tendermint show-node-id
 ```
 
 :::
+
+## State Syncing a Node
+
+If you want to join the network using State Sync (quick, but not applicable for archive nodes), check our [State Sync](https://docs.evmos.org/validators/setup/statesync.html) page

@@ -7,8 +7,9 @@ import (
 	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
 	upgradetypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
 
-	"github.com/evmos/evmos/v6/types"
-	inflationkeeper "github.com/evmos/evmos/v6/x/inflation/keeper"
+	"github.com/evmos/evmos/v8/types"
+	claimskeeper "github.com/evmos/evmos/v8/x/claims/keeper"
+	inflationkeeper "github.com/evmos/evmos/v8/x/inflation/keeper"
 )
 
 // CreateUpgradeHandler creates an SDK upgrade handler for v7
@@ -17,6 +18,7 @@ func CreateUpgradeHandler(
 	configurator module.Configurator,
 	bk bankkeeper.Keeper,
 	ik inflationkeeper.Keeper,
+	ck *claimskeeper.Keeper,
 ) upgradetypes.UpgradeHandler {
 	return func(ctx sdk.Context, _ upgradetypes.Plan, vm module.VersionMap) (module.VersionMap, error) {
 		logger := ctx.Logger().With("upgrade", UpgradeName)
@@ -32,9 +34,13 @@ func CreateUpgradeHandler(
 				logger.Error("FAILED TO MIGRATE FAUCET BALANCES", "error", err.Error())
 			}
 		}
+
 		if types.IsMainnet(ctx.ChainID()) {
 			logger.Debug("migrating skipped epochs value of inflation module...")
 			MigrateSkippedEpochs(ctx, ik)
+
+			logger.Debug("migrating early contributor's claim record to new address...")
+			MigrateContributorClaim(ctx, ck)
 		}
 
 		// Leave modules are as-is to avoid running InitGenesis.
@@ -44,7 +50,7 @@ func CreateUpgradeHandler(
 }
 
 // MigrateFaucetBalances transfers all balances of the inaccessible secp256k1
-// Faucet address to a eth_secp256k1 address.
+// Faucet address on testnet to a eth_secp256k1 address.
 func MigrateFaucetBalances(ctx sdk.Context, bk bankkeeper.Keeper) error {
 	from := sdk.MustAccAddressFromBech32(FaucetAddressFrom)
 	to := sdk.MustAccAddressFromBech32(FaucetAddressTo)
@@ -75,4 +81,19 @@ func MigrateSkippedEpochs(ctx sdk.Context, ik inflationkeeper.Keeper) {
 	previousValue := ik.GetSkippedEpochs(ctx)
 	newValue := previousValue - uint64(2)
 	ik.SetSkippedEpochs(ctx, newValue)
+}
+
+// MigrateContributorClaim migrates the claims record of a specific early
+// contributor from one address to another
+func MigrateContributorClaim(ctx sdk.Context, k *claimskeeper.Keeper) {
+	from, _ := sdk.AccAddressFromBech32(ContributorAddrFrom)
+	to, _ := sdk.AccAddressFromBech32(ContributorAddrTo)
+
+	cr, found := k.GetClaimsRecord(ctx, from)
+	if !found {
+		return
+	}
+
+	k.DeleteClaimsRecord(ctx, from)
+	k.SetClaimsRecord(ctx, to, cr)
 }

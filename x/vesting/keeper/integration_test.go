@@ -9,9 +9,9 @@ import (
 
 	"github.com/evmos/ethermint/encoding"
 	"github.com/evmos/ethermint/tests"
-	"github.com/evmos/evmos/v6/app"
-	"github.com/evmos/evmos/v6/app/ante"
-	"github.com/evmos/evmos/v6/testutil"
+	"github.com/evmos/evmos/v8/app"
+	"github.com/evmos/evmos/v8/app/ante"
+	"github.com/evmos/evmos/v8/testutil"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -22,7 +22,7 @@ import (
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 
-	"github.com/evmos/evmos/v6/x/vesting/types"
+	"github.com/evmos/evmos/v8/x/vesting/types"
 )
 
 // Clawback vesting with Cliff and Lock. In this case the cliff is reached
@@ -340,10 +340,14 @@ var _ = Describe("Clawback Vesting Accounts - claw back tokens", Ordered, func()
 		balanceGrantee := s.app.BankKeeper.GetBalance(s.ctx, grantee, stakeDenom)
 		balanceDest := s.app.BankKeeper.GetBalance(s.ctx, dest, stakeDenom)
 
+		// stake vested tokens
+		err := delegate(clawbackAccount, vested.AmountOf(stakeDenom).Int64())
+		Expect(err).To(BeNil())
+
 		// Perform clawback
 		msg := types.NewMsgClawback(funder, grantee, dest)
 		ctx := sdk.WrapSDKContext(s.ctx)
-		_, err := s.app.VestingKeeper.Clawback(ctx, msg)
+		_, err = s.app.VestingKeeper.Clawback(ctx, msg)
 		Expect(err).To(BeNil())
 
 		bF := s.app.BankKeeper.GetBalance(s.ctx, funder, stakeDenom)
@@ -382,10 +386,14 @@ var _ = Describe("Clawback Vesting Accounts - claw back tokens", Ordered, func()
 		balanceGrantee := s.app.BankKeeper.GetBalance(s.ctx, grantee, stakeDenom)
 		balanceDest := s.app.BankKeeper.GetBalance(s.ctx, dest, stakeDenom)
 
+		// stake vested tokens
+		err := delegate(clawbackAccount, vested.AmountOf(stakeDenom).Int64())
+		Expect(err).To(BeNil())
+
 		// Perform clawback
 		msg := types.NewMsgClawback(funder, grantee, dest)
 		ctx := sdk.WrapSDKContext(s.ctx)
-		_, err := s.app.VestingKeeper.Clawback(ctx, msg)
+		_, err = s.app.VestingKeeper.Clawback(ctx, msg)
 		Expect(err).To(BeNil())
 
 		bF := s.app.BankKeeper.GetBalance(s.ctx, funder, stakeDenom)
@@ -421,10 +429,14 @@ var _ = Describe("Clawback Vesting Accounts - claw back tokens", Ordered, func()
 		balanceGrantee := s.app.BankKeeper.GetBalance(s.ctx, grantee, stakeDenom)
 		balanceDest := s.app.BankKeeper.GetBalance(s.ctx, dest, stakeDenom)
 
+		// stake vested tokens
+		err := delegate(clawbackAccount, vested.AmountOf(stakeDenom).Int64())
+		Expect(err).To(BeNil())
+
 		// Perform clawback
 		msg := types.NewMsgClawback(funder, grantee, dest)
 		ctx := sdk.WrapSDKContext(s.ctx)
-		_, err := s.app.VestingKeeper.Clawback(ctx, msg)
+		_, err = s.app.VestingKeeper.Clawback(ctx, msg)
 		Expect(err).To(BeNil())
 
 		bF := s.app.BankKeeper.GetBalance(s.ctx, funder, stakeDenom)
